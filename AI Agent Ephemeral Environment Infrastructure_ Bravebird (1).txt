@@ -1,0 +1,53 @@
+﻿Based on the assignment requirements and current state-of-the-art infrastructure on AWS, here is the sequenced execution plan and key architectural decisions for building your system.
+Phase 1: Infrastructure as Code (IaC) and Core Networking
+Before building the compute layer, you must establish the foundation and security perimeter.
+1. Select IaC Framework: Choose AWS CDK (TypeScript/Python) for the fastest development velocity and access to L2/L3 constructs. CDK allows you to bundle complex logic—like the reaper and session recorder—into reusable components.
+2. VPC & Subnet Strategy: Provision a VPC with Private Isolated Subnets for the agent environments. Ensure they have no route to internal VPC resources.
+3. Harden the Metadata Boundary: To prevent the agent from stealing host credentials, decide on a networking mode. For ECS on Fargate, you must configure the agent to set ECS_AWSVPC_BLOCK_IMDS to true.
+4. Optional Proxy Layer: If implementing geographic simulation, provision a managed proxy gateway or route egress through a third-party service like NetNut or Browserbase to handle IP rotation and residential IP exit nodes.
+Phase 2: High-Performance Job Ingestion and Scheduling
+This phase addresses the "Concurrency & Scheduling" deep dive.
+1. API Gateway & Ingestion: Use Amazon API Gateway to receive job requests and trigger a validation Lambda.
+2. Implement SQS Fair Queues: Route incoming jobs to an Amazon SQS Standard Queue. Use the MessageGroupId attribute (set to the tenant_id) to enable "Fair Queues," which automatically prioritizes quiet tenants over "noisy neighbors".
+3. Rate Limiting (Token Bucket): Implement a Token Bucket logic using Amazon EventBridge Scheduler and Lambda. This Lambda refills a tenant-specific SQS queue with "tokens" at a fixed rate, ensuring long-term average consumption remains within limits.
+Phase 3: Compute Isolation and Execution
+The core of the system is the ephemeral environment where the agent runs.
+1. Compute Choice: Use AWS ECS on Fargate. Fargate is the recommended AWS-native path for untrusted workloads because each task runs in its own isolated microVM (powered by Firecracker).
+2. Environment Provisioning: When a message is consumed from SQS, a "Worker" Lambda triggers the RunTask API to spin up a fresh Fargate container.
+3. Secure Secret Injection: Do not use static environment variables or .env files, as these are visible to agents via terminal commands. Instead, use AWS Secrets Manager to inject credentials directly into the application memory at runtime via IAM-controlled task role permissions.
+Phase 4: Observability and the "Flight Recorder"
+This phase implements the real-time logging and session replay requirements.
+1. Virtual Display Setup: Run the agent inside the container using Xvfb (virtual framebuffer) to create a display for the browser.
+2. FFmpeg Streaming Pipeline: Pipe the output of Xvfb directly into an FFmpeg process. Use a "zero-disk" pattern to stream the video output to an Amazon S3 bucket using pipe:1 (stdout) and the Boto3 upload_fileobj method.
+3. Health Checks: Implement a Startup Probe script inside the container that verifies the VNC server and browser are active before the agent begins the task.
+Phase 5: Automated Reclamation (The Reaper)
+To control costs and ensure no environment is orphaned, you must implement reaper logic.
+1. Tag-Based Expiration: When provisioning the Fargate task, add a STACK_LIFE or ExpiresAfter tag with a timestamp.
+2. Implementation Options:
+   * Option A (Event-Driven): Use a DynamoDB table with TTL enabled. Write the job metadata to the table; when the TTL expires, a DynamoDB Stream triggers a "Destroy" Lambda to terminate the task.
+   * Option B (Scheduled): Use an EventBridge Cron Rule to trigger a "Reaper" Lambda every 10 minutes. This Lambda scans all running tasks and terminates any that exceed the ExpiresAfter threshold.
+Summary of Decisions and Sequence
+Sequence
+	Task
+	Key Decision / AWS Service
+	1
+	Define Perimeter
+	VPC + CDK + awsvpc networking
+	2
+	Ingest Job
+	API Gateway -> SQS Fair Queues
+	3
+	Schedule Work
+	Token Bucket via EventBridge + Lambda
+	4
+	Spin up Env
+	ECS on Fargate (MicroVM isolation)
+	5
+	Secure Credentials
+	Secrets Manager (IAM injection)
+	6
+	Record Session
+	FFmpeg -> S3 streaming (zero-disk)
+	7
+	Destroy Env
+	DynamoDB TTL -> Lambda Reaper

@@ -1,0 +1,259 @@
+﻿Architectural Standards for Ephemeral Computer Use Environments: Scaling Autonomous Agent Infrastructure
+The shift from Large Language Models acting as passive conversationalists to active participants in digital environments defines the current era of artificial intelligence. This transition is technically manifested through "Computer Use" agents, which are systems designed to perceive and manipulate standard graphical user interfaces in much the same way as human operators.1 Unlike traditional automation that relies on fixed Application Programming Interfaces (APIs), these agents leverage Visual Language Models (VLMs) and reasoning engines to interpret pixel-based screen data, plan multi-step navigational sequences, and execute keyboard and mouse events.1 This autonomy introduces significant infrastructure requirements centered on security, latency, and observability. The fundamental challenge lies in provisioning compute environments that are robust enough to withstand untrusted, dynamically generated code while remaining fast enough to support the iterative reasoning loops of modern agents.4
+The Evolution of Agentic Isolation and Virtualization
+The bedrock of agentic infrastructure is the execution environment, often referred to as the sandbox. Because AI agents are capable of generating and executing arbitrary code to solve problems, they represent a significant security risk if allowed to run on shared or poorly isolated hardware.4 Traditional containerization via standard Docker namespaces provides a measure of isolation but remains vulnerable to kernel-escape exploits, as all containers on a host share the same underlying operating system kernel.5 To mitigate this "lethal trifecta" of AI agents—untrusted code, high privilege, and poor isolation—the industry has moved toward hardware-level virtualization.4
+The leading technology in this domain is the micro-virtual machine (microVM), specifically exemplified by AWS Firecracker. Developed to power serverless offerings like AWS Lambda and Fargate, Firecracker is a minimalist Virtual Machine Monitor (VMM) written in Rust.7 It strips away the legacy hardware emulation found in traditional hypervisors like QEMU, such as graphics cards, USB controllers, and sound devices, supporting only the bare essentials: VirtIO network, VirtIO block storage, and a serial console.8 This minimalist design reduces the attack surface while enabling boot times as fast as    milliseconds, a performance benchmark that allows for the programmatic, on-demand creation of thousands of isolated environments per second.7
+
+
+Virtualization Technology
+	Architecture Type
+	Security Boundary
+	Resource Overhead
+	Optimal Scaling
+	Firecracker
+	KVM-based MicroVM
+	Hardware-level (KVM)
+	  
+ MiB RAM
+	High-density ephemeral 7
+	QEMU
+	Full Hypervisor
+	Hardware-level (KVM)
+	  
+ MiB RAM
+	Legacy or GPU workloads 8
+	gVisor
+	User-space Kernel
+	Syscall Interception
+	Moderate
+	Compute-heavy, low I/O 5
+	Kata Containers
+	VM-Container Hybrid
+	Hardware-level (KVM)
+	Moderate
+	Kubernetes-native VM 5
+	Standard OCI
+	Namespace/Cgroup
+	Logical/Software
+	Minimal
+	Trusted internal code 5
+	While Firecracker is optimized for speed and security, it imposes constraints that impact certain agentic workflows. Specifically, its lack of PCIe support prevents GPU passthrough, making it unsuitable for agents that must run heavy local machine learning inference.8 In such cases, developers often turn to gVisor or QEMU. gVisor, utilized extensively in Google Cloud’s GKE Agent Sandbox, provides a different approach by implementing a "Sentry" process in user space that intercepts and handles system calls before they reach the host kernel.9 This provides a software-based boundary that is stronger than standard containers but lacks the hardware-enforced isolation of a full microVM.5
+Networking Architectures and Zero-Trust Egress
+Providing an agent with internet access while protecting internal infrastructure is a critical balancing act. A computer use agent requires the ability to navigate the web, yet it must be strictly barred from accessing sensitive internal resources, such as the cloud provider’s Instance Metadata Service (IMDS).11 This is achieved through a combination of network virtualization and egress filtering.
+Hardening the Instance Metadata Service Boundary
+The IMDS (reachable at the link-local address 169.254.169.254) is a common target for attackers, as it can be used to exfiltrate temporary IAM credentials associated with the host instance.13 If an agent is compromised via prompt injection, it could be instructed to query this endpoint and gain administrative control over the entire cloud account.13 Modern infrastructure avoids this through several hardening techniques. For AWS ECS tasks running on EC2, the ECS_AWSVPC_BLOCK_IMDS configuration can be set to true, which instructs the ECS agent to block access to the metadata service for containers in awsvpc mode.12
+When using bridge networking, the most effective mitigation is enforcing IMDSv2 and setting the metadata response hop limit to   . Because the bridge network adds an extra network hop, the metadata response—which has its Time-To-Live (TTL) set to   —will expire before it can reach the agent’s container, effectively rendering the endpoint unreachable.12
+Geographic Simulation and IP Rotation Layers
+To interact with modern web services effectively, agents must often appear as legitimate human users located in specific geographic regions. This is essential for price monitoring, localized content testing, or bypassing region-specific restrictions.16 A sophisticated infrastructure layer implements this through a proxy management system that supports residential IP rotation.18
+
+
+Proxy Type
+	Success Rate
+	Anonymity Level
+	Primary Use Case
+	Residential
+	  
+
+	High
+	High-security websites 16
+	Datacenter
+	  
+
+	Moderate
+	Basic web scraping 20
+	Mobile
+	  
+
+	High
+	Location/Carrier testing 16
+	Static
+	  
+
+	Low
+	Persistent session logins 18
+	Implementing this proxy layer involves routing all agent egress through a gateway that dynamically selects an IP address from a global pool based on the task’s requirements.18 For example, if an agent is tasked with comparing retail prices in France, the gateway would assign a residential IP located in a French city to all outbound requests.16 Advanced implementations utilize "geo-fence tokens"—cryptographically signed data objects that bind a request to a specific geographic boundary—which are enforced by middleware to ensure data residency compliance.23 This ensures that even if an agent attempts to call a service outside its allowed jurisdiction, the request is intercepted and blocked at the network level.23
+Concurrency and Multi-Tenant Scheduling
+Managing 50 or more simultaneous job requests requires a high-performance scheduling system that can handle unpredictable bursts while maintaining fairness across different users.11 The primary risk in such multi-tenant environments is the "noisy neighbor" effect, where one user’s excessive workload consumes all available compute or networking capacity, leading to latency or failure for others.24
+Scalable Token Bucket Implementation
+The token bucket algorithm provides a mathematical framework for rate limiting and traffic shaping. In this model, work is permitted only if a token is available in the tenant's bucket.25 Tokens are added at a constant rate,   , and the bucket has a maximum capacity,   , which allows for short-term bursts of activity while enforcing a long-term average consumption rate.25
+On AWS, this is often implemented using Amazon SQS queues serving as "token buckets" for each tenant and action pair.25 A central control plane provisions queues named with a standard convention, such as {action}_{tenant_id}_token_bucket. To manage the refill rate, an EventBridge scheduler triggers a Lambda function that calculates the number of tokens to add based on the tenant's subscription tier and current queue depth.25
+
+
+Component
+	AWS Implementation
+	Functionality
+	Bucket
+	Amazon SQS
+	Durable storage for work tokens 25
+	Refill Engine
+	Lambda + EventBridge
+	Periodically adds tokens to queues 25
+	Policy Store
+	DynamoDB
+	Tracks tenant tiers and quotas 26
+	Consumer
+	ECS/Fargate Task
+	Executes the agent task if token is available 25
+	Fair Queuing and Adaptive Concurrency
+To further ensure system stability, SQS fair queues automatically detect noisy message groups—identified by a MessageGroupId corresponding to a tenant—and prioritize messages from "quiet" groups.24 This ensures that even if one tenant submits    jobs, other tenants can still have their single job processed with minimal delay.24 In conjunction with queuing, adaptive concurrency systems monitor the health of worker instances. If failure rates increase, the scheduler dynamically reduces the concurrency limit for that specific workload, preventing a feedback loop where failing jobs consume resources that could be used for healthy ones.28
+Observability and the "Flight Recorder" Pattern
+Observability in computer use environments goes beyond standard log aggregation. Because these agents operate visually, the infrastructure must provide a "session replay" mechanism that allows developers to see exactly what the agent saw and did.11 This is often called a "Flight Recorder" pattern, which captures screen state and interaction logs for later analysis or real-time monitoring.11
+Video Encoding and Streaming Pipelines
+A robust session recording system typically captures the agent's display—often managed via a virtual framebuffer like Xvfb—and encodes it into a video stream.3 For RDP or VNC-based environments, a proxy like Guacamole can capture the session in    MB segments, which are then converted to MP4 format using tools like guacenc or FFmpeg.30
+
+
+Recording Metric
+	Requirement
+	Rationale
+	Resolution
+	  
+ (XGA)
+	Balance of clarity and token cost 2
+	Framerate
+	  
+ FPS
+	Captures rapid mouse movements 30
+	Latency
+	  
+ second
+	Essential for real-time debugging 30
+	Storage
+	S3 with pre-signed URLs
+	Secure, scalable, and cost-effective 30
+	A critical architectural decision is the handling of video data. Rather than storing large video files on the local disk of the ephemeral environment, high-performance systems pipe the output of FFmpeg directly to an S3 bucket.33 This "zero-disk" approach prevents local storage bottlenecks and ensures that recordings are preserved even if the agentic environment crashes or is destroyed.34 Using pre-signed URLs allows the compute instance to upload directly to S3 without needing long-lived IAM credentials, further hardening the environment.32
+AI-Specific Tracing and Cost Attribution
+Standard application monitoring tells a developer that a request succeeded; AI observability tells them if the reasoning was correct.29 Platforms like Braintrust, LangSmith, and Arize Phoenix provide end-to-end tracing that correlates a specific LLM reasoning step with the resulting tool call and screen state.29 This allows for detailed cost attribution, where teams can track the cost per request, cost per agent, and cost per prompt.36 Since model price continues to drop, the cost of this observability—typically    of total spend—is considered negligible compared to the cost of production failures.35
+Cost Efficiency and Resource Reclamation
+Operating ephemeral infrastructure at scale can lead to significant cost leakage if resources are not aggressively reclaimed. A "reaper" logic is essential to ensure that every provisioned environment is destroyed after its task is completed or if it exceeds a maximum allowed runtime.4
+Automated Reaper Mechanisms
+A reaper is a background service that identifies and terminates orphaned or expired resources. One common implementation uses AWS EventBridge to trigger a Lambda function on a schedule (e.g., every 10 minutes).27 The function scans for EC2 instances or ECS tasks with specific metadata tags, such as ExpiresAfter.38 If the current time exceeds the launch time plus the expiration duration, the resource is terminated.38
+Advanced reaper systems utilize DynamoDB TTL (Time-To-Live). When a resource is provisioned, its metadata and an expiration timestamp are written to a DynamoDB table with TTL enabled.39 When the timestamp passes, DynamoDB automatically deletes the item and emits a record to a DynamoDB Stream.39 This stream triggers a Lambda function that performs the final cleanup, such as deleting the associated CloudFormation stack or terminating the VM.39
+Optimization via Warm Pools and Spot Instances
+The startup latency of a cold environment (   seconds for Fargate) is often too slow for interactive applications.40 ASG Warm Pools mitigate this by maintaining a set of pre-initialized EC2 instances in a Stopped or Hibernated state.42 When a job request arrives, an instance is transitioned to In-Service in under 10 seconds, drastically reducing the time-to-task.42
+
+
+Strategy
+	Cost Impact
+	Performance Impact
+	Primary Benefit
+	Spot Instances
+	  
+ Savings
+	Risk of interruption
+	Significant cost reduction 44
+	ASG Warm Pools
+	Moderate storage cost
+	  
+s startup
+	Reduced scale-out latency 42
+	Hibernation
+	Storage cost only
+	Faster than boot
+	Memory state preservation 42
+	Savings Plans
+	  
+ Savings
+	None
+	Predictable cost management 44
+	To further optimize costs, organizations use a mix of Spot and On-Demand instances.44 Spot instances provide deep discounts but can be reclaimed by AWS with a two-minute notice.45 Infrastructure for agents must be "Spot-aware," meaning it can detect an interruption signal and gracefully migrate the agent's state or checkpoint the task before the instance is terminated.44
+Multi-Tenancy and Secure Credential Injection
+In a multi-tenant system, Job A must be completely isolated from Job B, both at the filesystem level and the memory level.11 This ensures that sensitive data from one user does not persist in an environment reused by another.4 MicroVMs like Firecracker excel here, as they provide a fresh guest kernel for every job, which is destroyed upon completion.7
+Identity-Based Secret Management
+Injecting credentials into these untrusted environments requires a zero-trust approach. Static environment variables are a security risk because they can be easily read by any process in the container, including a compromised agent.14 State-of-the-art systems utilize sidecar containers or dedicated daemons like Vault Agent.50 The agent authenticates with a central secret manager using its workload identity—a short-lived, cryptographically signed token—and the secret manager then injects the necessary credentials directly into the agent's application memory or a temporary, memory-backed volume (tmpfs).50 This ensures that credentials never touch the persistent disk and are not visible in standard system logs or environment variable lists.14
+
+
+Secret Injection Method
+	Security Profile
+	Visibility to Agent
+	Recommended Use
+	Env Variables
+	Low
+	High (Visible via env)
+	Development only 14
+	.env Files
+	Low
+	High (Visible via cat)
+	Never for production 49
+	Vault Sidecar
+	High
+	Low (Injected at runtime)
+	Enterprise production 50
+	AWS Secrets Manager
+	High
+	Managed (IAM-controlled)
+	AWS-native agents 49
+	Infrastructure as Code and Operational Mindset
+Modern agent infrastructure is too complex to manage manually; it must be defined and versioned as code.11 The choice between Terraform, AWS CDK, and Pulumi often reflects a team's operational philosophy.
+Terraform is widely favored by platform teams for its declarative HashiCorp Configuration Language (HCL), which is purpose-built for defining infrastructure state.52 It excels in multi-cloud environments and has a massive registry of reusable modules.54 However, as infrastructure becomes more dynamic—with resources being created and destroyed thousands of times a day—imperative tools like AWS CDK and Pulumi have gained traction.52
+AWS CDK allows developers to use familiar programming languages like TypeScript or Python to define their infrastructure.53 This is particularly useful for building agent environments, as it allows for complex logic, loops, and abstractions that are difficult to express in HCL.52 For example, a "Construct" in CDK can encapsulate the entire agentic perimeter—including the microVM, its networking rules, and its session recording pipeline—into a single reusable object that can be deployed with a few lines of code.56
+Failure Modes and Resilience
+A production-grade system must be designed for failure. Ephemeral environments can fail to initialize, networks can be flaky, and agentic reasoning can enter infinite loops.2 Infrastructure resilience is built through proactive health checks and graceful degradation.
+Health checks for ephemeral environments often involve "startup probes" that verify the VNC server and browser are ready before the agent starts its task.58 If a container fails its startup probe, it is immediately killed and replaced, preventing the system from assigning a task to a broken environment.58 For long-running tasks, "liveness probes" monitor the health of the agent process; if the agent hangs or becomes unresponsive, the infrastructure reaps the environment and reports a failure to the orchestrator.58
+Another critical failure mode is "token exhaustion." If an agent enters a reasoning loop, it can consume thousands of tokens and generate significant costs in a matter of minutes.36 Safeguards include setting hard limits on the number of turns an agent can take and using real-time monitoring to detect anomalous usage patterns.2
+Future Outlook: The Internet of Agents
+The evolution of agentic infrastructure points toward a more standardized, protocol-driven future. The emergence of the Model Context Protocol (MCP) allows agents to interact with external tools and data sources through a unified interface, reducing the need for custom integrations.3 Furthermore, research into "Agent Semantic Layers" (L9) suggests a future where agents can discover and negotiate their own contexts and goals across distributed networks.62
+In the near term, we expect to see "checkpoint and restore" capabilities move from niche platforms to mainstream infrastructure. This will allow agents to sleep during idle periods and wake up instantly with their full memory and file system state intact, combining the security of ephemerality with the utility of persistence.63 As these technologies mature, the "agentic perimeter" will become a standard component of the enterprise cloud stack, enabling the safe and scalable deployment of autonomous digital operators across all sectors of the economy.
+Works cited
+1. Computer-use agents - AWS Prescriptive Guidance, accessed February 22, 2026, https://docs.aws.amazon.com/prescriptive-guidance/latest/agentic-ai-patterns/computer-use-agents.html
+2. Anthropic Computer Use API: Desktop Automation Guide, accessed February 22, 2026, https://www.digitalapplied.com/blog/anthropic-computer-use-api-guide
+3. Anthropic's Computer Use versus OpenAI's Computer Using Agent (CUA) - WorkOS, accessed February 22, 2026, https://workos.com/blog/anthropics-computer-use-versus-openais-computer-using-agent-cua
+4. Why Your AI Agents Need Ephemeral Environments (And Your Devs Probably Do Too), accessed February 22, 2026, https://coder.com/blog/ephemeral-environments
+5. How to sandbox AI agents in 2026: MicroVMs, gVisor & isolation ..., accessed February 22, 2026, https://northflank.com/blog/how-to-sandbox-ai-agents
+6. 10 Best Code Execution Sandboxes for AI Agents (2026) | Fast.io, accessed February 22, 2026, https://fast.io/resources/best-code-execution-sandboxes-ai-agents/
+7. restyler/awesome-sandbox: Awesome Code Sandboxing for AI - GitHub, accessed February 22, 2026, https://github.com/restyler/awesome-sandbox
+8. Firecracker vs QEMU — E2B Blog, accessed February 22, 2026, https://e2b.dev/blog/firecracker-vs-qemu
+9. Firecracker, gVisor, Containers, and WebAssembly - Comparing Isolation Technologies for AI Agents - SoftwareSeni, accessed February 22, 2026, https://www.softwareseni.com/firecracker-gvisor-containers-and-webassembly-comparing-isolation-technologies-for-ai-agents/
+10. Deploying Secure AI Agents on GKE - Google Codelabs, accessed February 22, 2026, https://codelabs.developers.google.com/codelabs/gke/ai-agents-on-gke
+11. Bravebird - Infra_Platform Take Home Assignment.pdf
+12. ECS on EC2: Covering Gaps in IMDS Hardening | Latacora, accessed February 22, 2026, https://www.latacora.com/blog/2025/10/02/ecs-on-ec2-covering-gaps-in-imds-hardening/
+13. ECScape: Understanding IAM Privilege Boundaries in Amazon ECS - Sweet Security, accessed February 22, 2026, https://www.sweet.security/blog/ecscape-understanding-iam-privilege-boundaries-in-amazon-ecs
+14. Securing AI Agents and LLM Workflows Without Secrets - Aembit, accessed February 22, 2026, https://aembit.io/blog/securing-ai-agents-without-secrets/
+15. Blocking instance metadata and ecs task metadata endpoint #1760 - GitHub, accessed February 22, 2026, https://github.com/bottlerocket-os/bottlerocket/discussions/1760
+16. How AI Web Agents Use Proxies to Simulate Human Behavior Online - netnut.io, accessed February 22, 2026, https://netnut.io/how-ai-web-agents-use-proxies-to-simulate-human-behavior-online/
+17. Proxy Rotation Automation - Browserbase, accessed February 22, 2026, https://www.browserbase.com/templates/proxies
+18. What is IP Rotation in Web Scraping? - Residential Proxies, accessed February 22, 2026, https://www.proxying.io/blog/what-is-ip-rotation-in-web-scraping
+19. Rotating Proxy Networks: Unleashing the Power of IP Rotation for Web Scraping, accessed February 22, 2026, https://iproyal.com/blog/rotating-proxy-networks-unleashing-the-power-of-ip-rotation-for-web-scraping/
+20. How Proxy Rotation Helps Bypass Anti-Bot Systems - ScoreDetect, accessed February 22, 2026, https://www.scoredetect.com/blog/posts/how-proxy-rotation-helps-bypass-anti-bot-systems
+21. Rotating Proxies: Everything You Need To Know - WebScrapingAPI, accessed February 22, 2026, https://www.webscrapingapi.com/web-scraping-rotating-proxies
+22. Rotating Proxies for Web Scraping: How to Avoid Bans and Scale Data Collection - Octo Browser Blog, accessed February 22, 2026, https://blog.octobrowser.net/rotating-proxies-for-web-scraping
+23. Geographically Constrained AI Agent Execution via Signed Policy Tokens - Technical Disclosure Commons, accessed February 22, 2026, https://www.tdcommons.org/cgi/viewcontent.cgi?article=10506&context=dpubs_series
+24. Building resilient multi-tenant systems with Amazon SQS fair queues | AWS Compute Blog, accessed February 22, 2026, https://aws.amazon.com/blogs/compute/building-resilient-multi-tenant-systems-with-amazon-sqs-fair-queues/
+25. Rate Limiting Multi-Tenant Environments with the Token Bucket ..., accessed February 22, 2026, https://willdady.com/rate-limiting-multi-tenant-environments-with-the-token-bucket-algorithm-on-aws
+26. AWS Rate Limiter Architecture. Architecture Overview | by Rabi Yireh - Medium, accessed February 22, 2026, https://medium.com/@rabiyireh/design-rate-limiter-using-aws-b61505648d72
+27. Automating life-cycle management for ephemeral resources using AWS Service Catalog, accessed February 22, 2026, https://aws.amazon.com/blogs/mt/automating-life-cycle-management-for-ephemeral-resources-using-aws-service-catalog/
+28. Building a fair multi-tenant queuing system - Hacker News, accessed February 22, 2026, https://news.ycombinator.com/item?id=39092849
+29. AI observability tools: A buyer's guide to monitoring AI agents in production (2026) - Articles, accessed February 22, 2026, https://www.braintrust.dev/articles/best-ai-observability-tools-2026
+30. Session Recording — Kasm 1.17.0 documentation, accessed February 22, 2026, https://www.kasmweb.com/docs/develop/guide/session_recording.html
+31. Record Inline Sessions - Cisco IoT Operations Dashboard, accessed February 22, 2026, https://developer.cisco.com/docs/iotod/record-inline-sessions/
+32. How to read remote video on Amazon S3 using ffmpeg - Stack Overflow, accessed February 22, 2026, https://stackoverflow.com/questions/2677317/how-to-read-remote-video-on-amazon-s3-using-ffmpeg
+33. Processing user-generated content using AWS Lambda and FFmpeg, accessed February 22, 2026, https://aws.amazon.com/blogs/media/processing-user-generated-content-using-aws-lambda-and-ffmpeg/
+34. How to Stream Media Files from S3 Directly to AWS Lambda Using FFmpeg in Python | Backend APIs, Web Apps, Bots & Automation | Hrekov, accessed February 22, 2026, https://hrekov.com/blog/how-to-stream-media-file-from-s3-directly-to-aws-lambda-ffmpeg-python-example
+35. Why Observability is Table Stakes for Multi-Agent Systems in Production Environments, accessed February 22, 2026, https://www.softwareseni.com/why-observability-is-table-stakes-for-multi-agent-systems-in-production-environments/
+36. AI Cost Observability: Tracking and Controlling LLM Spend in Production - TrueFoundry, accessed February 22, 2026, https://www.truefoundry.com/blog/ai-cost-observability
+37. AWS account purging at scale: A simple workflow | by Thomas Ballester | Medium, accessed February 22, 2026, https://medium.com/@ballester.ct/aws-account-purging-at-scale-a-simple-workflow-6b2c7154c011
+38. aws-ec2-instance-reaper - PyPI, accessed February 22, 2026, https://pypi.org/project/aws-ec2-instance-reaper/
+39. Destroy THEIR Stacks - Ephemeral CDK Stacks as a Service - DEV ..., accessed February 22, 2026, https://dev.to/aws-builders/destroy-their-stacks-ephemeral-cdk-stacks-as-a-service-5fa
+40. EC2 vs. Fargate: Understanding the Differences and Choosing the Best for ECS, accessed February 22, 2026, https://www.prosperops.com/blog/ec2-vs-fargate/
+41. Fargate vs EC2 | Pulumi Blog, accessed February 22, 2026, https://www.pulumi.com/blog/fargate-vs-ec2/
+42. AWS ASG Warm Pools: The Ultimate Guide - nOps, accessed February 22, 2026, https://www.nops.io/blog/aws-asg-warm-pools/
+43. Scaling your applications faster with EC2 Auto Scaling Warm Pools | AWS Compute Blog, accessed February 22, 2026, https://aws.amazon.com/blogs/compute/scaling-your-applications-faster-with-ec2-auto-scaling-warm-pools/
+44. Running Amazon ECS on EC2 vs. Fargate — Which One Fits Your Workload? - Medium, accessed February 22, 2026, https://medium.com/@sudhakargorti/running-amazon-ecs-on-ec2-vs-fargate-which-one-fits-your-workload-626abeb4d6f3
+45. Limit access to the Instance Metadata Service - Amazon Elastic Compute Cloud, accessed February 22, 2026, https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instance-metadata-limiting-access.html
+46. Fargate vs. EC2: Launch Type Comparison - AWS for Engineers, accessed February 22, 2026, https://awsforengineers.com/blog/fargate-vs-ec2-launch-type-comparison/
+47. Decrease latency for applications with long boot times using warm pools - Amazon EC2 Auto Scaling, accessed February 22, 2026, https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-warm-pools.html
+48. Firecracker – The Virtualization Technology Behind AWS Lambda and Bedrock AgentCore Runtime, accessed February 22, 2026, https://builder.aws.com/content/36Cbsfx6GT4nUDWE1zT9Rjf64et/firecracker-the-virtualization-technology-behind-aws-lambda-and-bedrock-agentcore-runtime
+49. Ask HN: How are you managing secrets with AI agents? - Hacker News, accessed February 22, 2026, https://news.ycombinator.com/item?id=46825555
+50. How to Use Vault Agent for Secret Injection - OneUptime, accessed February 22, 2026, https://oneuptime.com/blog/post/2026-01-27-vault-agent-secret-injection/view
+51. Security for AI Agents: Protecting Intelligent Systems in 2025, accessed February 22, 2026, https://www.obsidiansecurity.com/blog/security-for-ai-agents
+52. Terraform vs. Pulumi IaC, accessed February 22, 2026, https://www.pulumi.com/docs/iac/comparisons/terraform/
+53. CDK vs. Terraform: A Comparison of Infrastructure Automation Approaches - mogenius, accessed February 22, 2026, https://mogenius.com/blog-post/cdk-vs-terraform-a-comparison-of-infrastructure-automation-approaches
+54. Pulumi vs Terraform: An In-Depth Comparison | env zero, accessed February 22, 2026, https://www.env0.com/blog/pulumi-vs-terraform-an-in-depth-comparison
+55. Infrastructure as Code Tools Comparison: Terraform, Pulumi, CDK - Naviteq, accessed February 22, 2026, https://www.naviteq.io/blog/choosing-the-right-infrastructure-as-code-tools-a-ctos-guide-to-terraform-pulumi-cdk-and-more/
+56. AWS CDK vs Terraform Comparison: Key Differences - Terrateam, accessed February 22, 2026, https://terrateam.io/blog/aws-cdk-vs-terraform
+57. Infrastructure as Code on AWS: Terraform vs CloudFormation vs CDK - TheCloud4Dev, accessed February 22, 2026, https://www.thecloud4dev.com/infrastructure-as-code-on-aws-terraform-vs-cloudformation-vs-cdk/
+58. Configure container health checks for services | Cloud Run - Google Cloud Documentation, accessed February 22, 2026, https://docs.cloud.google.com/run/docs/configuring/healthchecks
+59. Health Checks for Gradient Deployments | DigitalOcean Documentation, accessed February 22, 2026, https://docs.digitalocean.com/products/paperspace/deployments/reference/health-checks/
+60. Kubernetes Fundamentals: How to Use Kubernetes Health Checks - New Relic, accessed February 22, 2026, https://newrelic.com/blog/infrastructure-monitoring/kubernetes-health-checks
+61. How we built our multi-agent research system - Anthropic, accessed February 22, 2026, https://www.anthropic.com/engineering/multi-agent-research-system
+62. [2511.19699] A Layered Protocol Architecture for the Internet of Agents - arXiv, accessed February 22, 2026, https://arxiv.org/abs/2511.19699
+63. AI Agent Sandboxes Compared | Ry Walker Research, accessed February 22, 2026, https://rywalker.com/research/ai-agent-sandboxes
