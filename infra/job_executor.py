@@ -6,7 +6,6 @@ import aws_cdk.aws_ecs as ecs
 import aws_cdk.aws_iam as iam
 import aws_cdk.aws_logs as logs
 import aws_cdk.aws_s3 as s3
-import aws_cdk.aws_secretsmanager as secretsmanager
 from constructs import Construct
 
 
@@ -57,15 +56,6 @@ class JobExecutor(Construct):
         )
 
         self.secrets_prefix = "cuseinfra/tenants"
-
-        demo_secret = secretsmanager.Secret(
-            self, "DemoSecret",
-            secret_name=f"{self.secrets_prefix}/tenant-1/website-credentials",
-            secret_string_value=cdk.SecretValue.unsafe_plain_text(
-                '{"username": "demo-user", "password": "demo-pass-123"}'
-            ),
-            removal_policy=cdk.RemovalPolicy.DESTROY,
-        )
 
         task_role = iam.Role(
             self, "TaskRole",
