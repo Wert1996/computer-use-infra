@@ -97,13 +97,16 @@ The agent has full internet access but is completely isolated from internal infr
 
 ```
 VPC (10.0.0.0/16)
-├── Public Subnet — NAT Gateway (sole internet egress for agents)
-└── Agent Isolated Subnet — Fargate tasks ONLY
+├── Public Subnet — NAT Gateway + Internet Gateway
+└── Private Subnet (PRIVATE_WITH_EGRESS) — Agent Fargate tasks
+    ├── Route: 0.0.0.0/0 → NAT Gateway (internet only)
     ├── NACL: DENY 10.0.0.0/16 outbound, DENY 169.254.169.254/32, ALLOW 80/443
     └── Security Group: no inbound, outbound 80/443 only
+
+Lambdas run outside the VPC (AWS-managed) — no VPC attachment needed
 ```
 
-- **VPC isolation**: Agent tasks run in a dedicated isolated subnet (`PRIVATE_WITH_EGRESS`) with routes only to the NAT Gateway — no routes to any other VPC resource
+- **VPC isolation**: Agent tasks run in a private subnet (`PRIVATE_WITH_EGRESS`) with routes only to the NAT Gateway — no direct route to any other VPC resource
 - **NACL enforcement** (stateless firewall):
   - Rule 100: **DENY** all outbound to `10.0.0.0/16` — blocks access to every VPC resource (other subnets, ENIs, endpoints)
   - Rule 101: **DENY** all outbound to `169.254.169.254/32` — blocks EC2 Instance Metadata Service (IMDS), preventing credential theft
@@ -341,7 +344,7 @@ Submits a job, polls for completion, verifies recording and screenshot URLs are 
 
 ### Phase 2: Core Infrastructure (CDK)
 
-- [x] VPC with public + agent isolated subnets
+- [x] VPC with public subnet (NAT Gateway) + private subnet (agent tasks)
 - [x] NACLs: DENY VPC CIDR, DENY IMDS, ALLOW 80/443 outbound, ALLOW ephemeral inbound
 - [x] Security group: no inbound, outbound 80/443 only
 - [x] ECS Cluster (Fargate-only)
@@ -396,15 +399,13 @@ Submits a job, polls for completion, verifies recording and screenshot URLs are 
 - [x] README with architecture, deploy instructions, usage examples
 - [x] ARCHITECTURE.md with full CloudFormation resource breakdown
 - [x] FUTURE_IMPROVEMENTS.md with removed items and future work
-- [ ] Deploy to AWS and run integration test (not done — requires AWS account)
+- [x] Deploy to AWS and run integration test
 
 ### Items Simplified for Demo
 
 - [ ] Dead Letter Queues (removed to reduce resource count)
 - [ ] Multi-AZ (single AZ for demo simplicity)
-- [ ] Private subnets (removed — nothing placed there)
 - [ ] S3 auto-delete custom resource (removed — lifecycle rules handle expiry)
-- [ ] Separate Presign Lambda (merged into GetJob Lambda)
 
 ---
 
