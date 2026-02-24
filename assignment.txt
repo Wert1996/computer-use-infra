@@ -1,0 +1,37 @@
+Bravebird Take Home Assignment - Platform & Infra
+The Challenge
+Build a system that provisions and manages ephemeral environments to execute "Computer Use" tasks. The goal is to move beyond a local script and build a scalable, production-ready backend.
+The Agent: You do not need to build a complex ML agent. A simple placeholder script (e.g., "Open browser → Search → Save Screenshot") is sufficient. We are evaluating the infrastructure that wraps it.
+Core Objective (Required)
+You must build a functional pipeline that:
+1. 2.
+3.
+Accepts a Job: An API or CLI that takes a task input.
+Provisions an Environment: Spins up a fresh VM or Container (EC2, Fargate, Firecracker, etc.).
+Executes & Reaps: Runs the agent, captures the output, and destroys the environment.
+Platform Deep-Dives (Choose 2 or more)
+We want to see your expertise in building robust systems. Pick at least two of the following areas to "over-engineer" and showcase your skills:
+1. High-Performance Networking
+● How do you ensure the agent has internet access but cannot reach your internal AWS metadata or other VPC resources?
+● Bonus: Implement a proxy layer to rotate IPs or simulate different geographic locations. 
+2. Concurrency & Scheduling
+● How does the system handle 50 simultaneous job requests?
+● Implement a queuing strategy (SQS, Redis, etc.) with priority levels or rate-limiting per
+user.
+3. Observability & "The Flight Recorder"
+● How do we see what went wrong? Implement real-time log streaming or a "session replay" mechanism (uploading video/screenshots to S3 with pre-signed URLs).
+● Bonus: Add health checks that detect if the VM has hung before the agent even starts. 
+4. Cost Control & Efficiency
+● Automated "reaper" logic: Ensure no VM lives longer than $X$ minutes, even if the agent crashes.
+● Bonus: Use Spot Instances or Warm Pools to balance the tradeoff between "Time-to-Task" and "Cost-per-Run."
+5. Security & Multi-tenancy
+● How do you securely inject credentials into the environment without them being logged? ● Ensure total filesystem and memory isolation between Job A and Job B.
+Evaluation Criteria
+We aren't just looking at the code; we are looking at your operational mindset:
+● Infrastructure as Code (IaC): Can I spin this up with one command (Terraform/CDK/Pulumi)?
+● Failure Modes: How does the system behave when a VM fails to initialize or the network is flaky?
+● Tradeoffs: A clear README explaining why you chose your specific stack and what you would build next with more time.
+Submission
+● Link: GitHub repo.
+● Documentation: A brief architectural overview and instructions on how to trigger a job
+and view the results.

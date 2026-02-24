@@ -128,48 +128,33 @@ self.output_bucket = s3.Bucket(self, "OutputBucket",
 
 ## Additional Future Work (not previously implemented)
 
-- **Warm Pools** — Pre-initialized Fargate tasks for sub-5s job start
-- **Spot Instances** — ECS Capacity Providers with Spot for 60-90% cost reduction
-- **IP Rotation Proxy** — Egress through residential proxy provider for geo-simulation
-- **Live Session Streaming** — WebSocket-based VNC relay for real-time viewing
-- **Multi-region** — Deploy to multiple AWS regions for geographic redundancy
-- **CI/CD Pipeline** — GitHub Actions for automated deploy on push
-- **Credential Rotation** — Vault sidecar for automatic secret rotation
+### High Priority (Production Readiness)
 
+| Item | Description |
+|------|-------------|
+| **API Authentication** | Add tenant auth (API keys, JWT, or Cognito). Currently the API is open. |
+| **API Rate Limiting** | Add rate limiting at the API Gateway level. Currently only per-tenant concurrency is limited at the worker level. |
+| **Per-Tenant Secret Isolation** | Currently the ECS task role can read all secrets under `cuseinfra/tenants/*`, so tenant-1's task could read tenant-2's secrets. Fix with ABAC: tag each secret with `tenantId`, pass a session tag via ECS task, and add an IAM condition `secretsmanager:ResourceTag/tenantId == ${aws:PrincipalTag/tenantId}`. Alternatively, create a separate task role per tenant. |
+| **Non-Retryable Failures** | On non-retryable failures (validation errors, bad input), discard the message instead of retrying. Currently messages get infinitely retried without a DLQ. |
 
+### Medium Priority (Operations & Scale)
 
-****
+| Item | Description |
+|------|-------------|
+| **VPC Endpoints** | Add gateway/interface endpoints for S3, DynamoDB, CloudWatch, Secrets Manager to avoid NAT Gateway data transfer costs. |
+| **CI/CD Pipeline** | Each Lambda and agent code in separate git repos. Each repo has its own CI that triggers infra redeployment via GitHub API `repository_dispatch`. If the infra repo uses the `latest` tag, new jobs and lambdas automatically use the latest images. |
+| **ECS Service for APIs** | Move API handlers from Lambda to long-running ECS services for lower latency at scale. |
+| **Consistency Tuning** | Use strong consistency for writes and eventual consistency for reads where appropriate. Add DynamoDB DAX for caching high-throughput reads. |
+| **Priority Queue (RabbitMQ)** | Replace SQS multi-queue with RabbitMQ for true priority ordering (0-255 range). Can also be done using `PartialBatchResponse` in SQS itself. |
 
-Each lambda in a separate git repo.
-Agent code in a separate git repo.
-Each repo has its own CI and then that triggers an infra redeployment. This can be done using Github API repository_dispatch to the infra repo.
-If the infra repo uses the 'latest' tag, then new jobs and lambdas will automatically start using the latest images.
-If we were to use ECS services at some places, then reployment is necessary.
-Add more subnets according to the required scale. 
-Add more availability zones.
-VPC endpoints for s3, cloudwatch, dynamodb, secrets manager.
+### Low Priority (Advanced Features)
 
-Currently SQS retries indefinitely as there is no DLQ.
-
-Rate limits are currently at tenant invocations of agent jobs, but not at the API rate limiting level.
-
-There is no auth for tenants.
-ECS service for the APIs.
-Lambdas for event driven workflows
-
-Switching to strong and eventual consistency as required.
-Caching for high throughput on the DB level
-
-Use RabbitMQ for implementing actual priority based scheduling of tasks. Can specify a range between 0-255
-It can also be done using PartialBatchResponse in SQS itself.
-Messages get infinitely retried. On non-retryable failures, they should be discarded.
-
-Currently the agent task only has outbound internet access on specific ports. VPC routing takes place before the NAT access.
-
-
-Once secrets are added, the agent still has access to the credentials in the main memory. Need to prevent misuse using prompt injection and agent phishing attacks in the application logic. This can be done using the Camel framework ? How to prevent this credential leak ?
-
-The IAM credentials are temporary. Attackers won't receive long lived IAM credentials ever.
-We need key rotation and short lived access tokens for everything. The tokens need to be discarded immediately at the application level.
-
-Per-tenant secret isolation — currently the ECS task role can read all secrets under `cuseinfra/tenants/*`, so tenant-1's task could read tenant-2's secrets. Fix with ABAC: tag each secret with `tenantId`, pass a session tag via ECS task, and add an IAM condition `secretsmanager:ResourceTag/tenantId == ${aws:PrincipalTag/tenantId}`. Alternatively, create a separate task role per tenant.
+| Item | Description |
+|------|-------------|
+| **Warm Pools** | Pre-initialized Fargate tasks for sub-5s job start. |
+| **Spot Instances** | ECS Capacity Providers with Spot for 60-90% cost reduction. |
+| **IP Rotation Proxy** | Egress through residential proxy provider for geo-simulation. |
+| **Live Session Streaming** | WebSocket-based VNC relay for real-time viewing. |
+| **Multi-region** | Deploy to multiple AWS regions for geographic redundancy. |
+| **Credential Rotation** | Vault sidecar for automatic secret rotation with short-lived access tokens. Tokens should be discarded immediately at the application level. |
+| **Agent Prompt Injection Defense** | Once secrets are loaded into agent memory, prevent exfiltration via prompt injection and agent phishing attacks. The IAM credentials are temporary (attackers won't receive long-lived credentials), but application-level guardrails are still needed. |
