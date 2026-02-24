@@ -10,17 +10,12 @@ class Networking(Construct):
         self.vpc = ec2.Vpc(
             self, "Vpc",
             ip_addresses=ec2.IpAddresses.cidr("10.0.0.0/16"),
-            max_azs=2,
+            max_azs=1,
             nat_gateways=1,
             subnet_configuration=[
                 ec2.SubnetConfiguration(
                     name="Public",
                     subnet_type=ec2.SubnetType.PUBLIC,
-                    cidr_mask=24,
-                ),
-                ec2.SubnetConfiguration(
-                    name="Private",
-                    subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
                     cidr_mask=24,
                 ),
                 ec2.SubnetConfiguration(
@@ -39,7 +34,6 @@ class Networking(Construct):
                 vpc=self.vpc,
                 subnet_selection=ec2.SubnetSelection(subnets=[subnet]),
             )
-
             nacl.add_entry(
                 "DenyVpcOutbound",
                 cidr=ec2.AclCidr.ipv4("10.0.0.0/16"),

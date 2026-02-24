@@ -11,7 +11,6 @@ class Observability(Construct):
         self.output_bucket = s3.Bucket(
             self, "OutputBucket",
             removal_policy=cdk.RemovalPolicy.DESTROY,
-            auto_delete_objects=True,
             encryption=s3.BucketEncryption.S3_MANAGED,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             lifecycle_rules=[

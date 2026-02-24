@@ -6,6 +6,7 @@ import aws_cdk.aws_ecs as ecs
 import aws_cdk.aws_iam as iam
 import aws_cdk.aws_logs as logs
 import aws_cdk.aws_s3 as s3
+import aws_cdk.aws_secretsmanager as secretsmanager
 from constructs import Construct
 
 
@@ -55,13 +56,39 @@ class JobExecutor(Construct):
             ),
         )
 
+        self.secrets_prefix = "cuseinfra/tenants"
+
+        demo_secret = secretsmanager.Secret(
+            self, "DemoSecret",
+            secret_name=f"{self.secrets_prefix}/tenant-1/website-credentials",
+            secret_string_value=cdk.SecretValue.unsafe_plain_text(
+                '{"username": "demo-user", "password": "demo-pass-123"}'
+            ),
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+
         task_role = iam.Role(
             self, "TaskRole",
             assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
         )
-        output_bucket.grant_put(task_role, "jobs/*")
+        task_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[
+                    cdk.Stack.of(self).format_arn(
+                        service="secretsmanager",
+                        resource="secret",
+                        resource_name=f"{self.secrets_prefix}/*",
+                        arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
+                    ),
+                ],
+            )
+        )
 
-        image = ecs.ContainerImage.from_asset("agent")
+        image = ecs.ContainerImage.from_asset(
+            "agent",
+            platform=ecr_assets.Platform.LINUX_AMD64,
+        )
 
         self.task_definition = ecs.FargateTaskDefinition(
             self, "TaskDef",
@@ -79,7 +106,5 @@ class JobExecutor(Construct):
                 stream_prefix="agent",
                 log_group=log_group,
             ),
-            environment={
-                "S3_BUCKET": output_bucket.bucket_name,
-            },
+            environment={},
         )

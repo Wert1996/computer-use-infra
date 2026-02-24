@@ -27,34 +27,21 @@ class JobIngestion(Construct):
         agent_subnets: ec2.SelectedSubnets,
         agent_security_group: ec2.ISecurityGroup,
         output_bucket: s3.IBucket,
+        secrets_prefix: str,
     ) -> None:
         super().__init__(scope, construct_id)
 
         queues = {}
-        dlqs = {}
         for priority in ["high", "medium", "low"]:
-            dlq = sqs.Queue(
-                self, f"DLQ-{priority}",
-                queue_name=f"jobs-{priority}-dlq.fifo",
-                fifo=True,
-                retention_period=cdk.Duration.days(7),
-            )
-            dlqs[priority] = dlq
-
             queue = sqs.Queue(
                 self, f"Queue-{priority}",
                 queue_name=f"jobs-{priority}.fifo",
                 fifo=True,
                 content_based_deduplication=True,
                 visibility_timeout=MAX_TASK_DURATION,
-                dead_letter_queue=sqs.DeadLetterQueue(
-                    max_receive_count=3,
-                    queue=dlq,
-                ),
             )
             queues[priority] = queue
 
-        # Ingest Lambda
         ingest_fn = _lambda.Function(
             self, "IngestFn",
             runtime=_lambda.Runtime.PYTHON_3_12,
@@ -73,7 +60,6 @@ class JobIngestion(Construct):
         for q in queues.values():
             q.grant_send_messages(ingest_fn)
 
-        # Get Job Lambda
         get_job_fn = _lambda.Function(
             self, "GetJobFn",
             runtime=_lambda.Runtime.PYTHON_3_12,
@@ -82,26 +68,12 @@ class JobIngestion(Construct):
             timeout=cdk.Duration.seconds(10),
             environment={
                 "JOBS_TABLE": jobs_table.table_name,
-            },
-        )
-        jobs_table.grant_read_data(get_job_fn)
-
-        # Presign Lambda
-        presign_fn = _lambda.Function(
-            self, "PresignFn",
-            runtime=_lambda.Runtime.PYTHON_3_12,
-            handler="handler.handler",
-            code=_lambda.Code.from_asset(f"{LAMBDA_DIR}/presign"),
-            timeout=cdk.Duration.seconds(10),
-            environment={
-                "JOBS_TABLE": jobs_table.table_name,
                 "OUTPUT_BUCKET": output_bucket.bucket_name,
             },
         )
-        jobs_table.grant_read_data(presign_fn)
-        output_bucket.grant_read(presign_fn, "jobs/*")
+        jobs_table.grant_read_data(get_job_fn)
+        output_bucket.grant_read(get_job_fn, "jobs/*")
 
-        # API Gateway
         api = apigwv2.HttpApi(
             self, "Api",
             api_name="cuseinfra-api",
@@ -121,17 +93,9 @@ class JobIngestion(Construct):
                 "GetJobIntegration", get_job_fn
             ),
         )
-        api.add_routes(
-            path="/jobs/{id}/recording",
-            methods=[apigwv2.HttpMethod.GET],
-            integration=apigwv2_integrations.HttpLambdaIntegration(
-                "PresignIntegration", presign_fn
-            ),
-        )
 
         self.api_url = api.url or ""
 
-        # Worker Lambda
         subnet_ids = [s.subnet_id for s in agent_subnets.subnets]
 
         worker_fn = _lambda.Function(
@@ -148,10 +112,12 @@ class JobIngestion(Construct):
                 "SUBNET_IDS": ",".join(subnet_ids),
                 "SECURITY_GROUP_ID": agent_security_group.security_group_id,
                 "OUTPUT_BUCKET": output_bucket.bucket_name,
+                "SECRETS_PREFIX": secrets_prefix,
                 "MAX_CONCURRENT_PER_TENANT": "5",
             },
         )
         jobs_table.grant_read_write_data(worker_fn)
+        output_bucket.grant_put(worker_fn, "jobs/*")
 
         worker_fn.add_to_role_policy(
             iam.PolicyStatement(
@@ -179,7 +145,6 @@ class JobIngestion(Construct):
                 )
             )
 
-        # Completion Lambda
         completion_fn = _lambda.Function(
             self, "CompletionFn",
             runtime=_lambda.Runtime.PYTHON_3_12,

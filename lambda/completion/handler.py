@@ -79,8 +79,9 @@ def handler(event, context):
         expr_values[":sr"] = stop_reason
 
     if output:
-        update_expr += ", output = :out"
+        update_expr += ", #o = :out"
         expr_values[":out"] = json.dumps(output)
+        expr_names["#o"] = "output"
 
     table.update_item(
         Key={"jobId": job_id},

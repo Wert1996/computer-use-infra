@@ -33,6 +33,7 @@ class CuseinfraStack(cdk.Stack):
             agent_subnets=networking.agent_subnets,
             agent_security_group=networking.agent_security_group,
             output_bucket=observability.output_bucket,
+            secrets_prefix=executor.secrets_prefix,
         )
 
         Reaper(

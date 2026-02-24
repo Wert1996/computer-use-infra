@@ -4,8 +4,11 @@ import os
 import boto3
 
 dynamodb = boto3.resource("dynamodb")
+s3 = boto3.client("s3")
 
 JOBS_TABLE = os.environ["JOBS_TABLE"]
+OUTPUT_BUCKET = os.environ.get("OUTPUT_BUCKET", "")
+URL_EXPIRY = 3600
 
 
 def handler(event, context):
@@ -40,9 +43,39 @@ def handler(event, context):
         "output": output,
     }
 
+    if OUTPUT_BUCKET and job.get("status") in ("COMPLETED", "FAILED"):
+        recording_url, screenshot_urls = get_presigned_urls(job_id)
+        body["recording"] = recording_url
+        body["screenshots"] = screenshot_urls
+
     body = {k: v for k, v in body.items() if v is not None}
 
     return response(200, body)
+
+
+def get_presigned_urls(job_id):
+    s3_prefix = f"jobs/{job_id}/"
+    recording_url = None
+    screenshot_urls = []
+
+    try:
+        objects = s3.list_objects_v2(Bucket=OUTPUT_BUCKET, Prefix=s3_prefix)
+    except Exception:
+        return None, []
+
+    for obj in objects.get("Contents", []):
+        key = obj["Key"]
+        presigned = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": OUTPUT_BUCKET, "Key": key},
+            ExpiresIn=URL_EXPIRY,
+        )
+        if key.endswith("recording.mp4"):
+            recording_url = presigned
+        elif "screenshots/" in key and key.endswith(".png"):
+            screenshot_urls.append(presigned)
+
+    return recording_url, screenshot_urls
 
 
 def response(status_code, body):

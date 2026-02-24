@@ -7,6 +7,7 @@ from boto3.dynamodb.conditions import Attr, Key
 
 dynamodb = boto3.resource("dynamodb")
 ecs = boto3.client("ecs")
+s3 = boto3.client("s3")
 
 JOBS_TABLE = os.environ["JOBS_TABLE"]
 CLUSTER_ARN = os.environ["CLUSTER_ARN"]
@@ -15,6 +16,7 @@ CONTAINER_NAME = os.environ["CONTAINER_NAME"]
 SUBNET_IDS = os.environ["SUBNET_IDS"].split(",")
 SECURITY_GROUP_ID = os.environ["SECURITY_GROUP_ID"]
 OUTPUT_BUCKET = os.environ["OUTPUT_BUCKET"]
+SECRETS_PREFIX = os.environ["SECRETS_PREFIX"]
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT_PER_TENANT", "5"))
 
 
@@ -39,6 +41,16 @@ def handler(event, context):
 
         s3_prefix = f"jobs/{job_id}/"
 
+        presigned_post = s3.generate_presigned_post(
+            Bucket=OUTPUT_BUCKET,
+            Key="${filename}",
+            Conditions=[
+                ["starts-with", "$key", s3_prefix],
+                ["content-length-range", 0, 104857600],
+            ],
+            ExpiresIn=3600,
+        )
+
         result = ecs.run_task(
             cluster=CLUSTER_ARN,
             taskDefinition=TASK_DEFINITION_ARN,
@@ -56,8 +68,10 @@ def handler(event, context):
                         "name": CONTAINER_NAME,
                         "environment": [
                             {"name": "JOB_ID", "value": job_id},
-                            {"name": "S3_BUCKET", "value": OUTPUT_BUCKET},
+                            {"name": "PRESIGNED_POST_DATA", "value": json.dumps(presigned_post)},
                             {"name": "S3_PREFIX", "value": s3_prefix},
+                            {"name": "TENANT_ID", "value": tenant_id},
+                            {"name": "SECRETS_PREFIX", "value": SECRETS_PREFIX},
                             {"name": "TASK_DESCRIPTION", "value": task_description},
                         ],
                     }

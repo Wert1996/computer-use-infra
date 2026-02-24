@@ -5,7 +5,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     chromium-driver \
     ffmpeg \
-    awscli \
     && rm -rf /var/lib/apt/lists/*
 
 ENV DISPLAY=:99

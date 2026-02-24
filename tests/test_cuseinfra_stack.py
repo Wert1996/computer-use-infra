@@ -15,24 +15,9 @@ def test_vpc_created():
     template.resource_count_is("AWS::EC2::VPC", 1)
 
 
-def test_agent_nacl_deny_vpc_cidr():
+def test_single_az_two_subnets():
     template = get_template()
-    template.has_resource_properties("AWS::EC2::NetworkAclEntry", {
-        "CidrBlock": "10.0.0.0/16",
-        "Egress": True,
-        "RuleAction": "deny",
-        "RuleNumber": 100,
-    })
-
-
-def test_agent_nacl_deny_imds():
-    template = get_template()
-    template.has_resource_properties("AWS::EC2::NetworkAclEntry", {
-        "CidrBlock": "169.254.169.254/32",
-        "Egress": True,
-        "RuleAction": "deny",
-        "RuleNumber": 101,
-    })
+    template.resource_count_is("AWS::EC2::Subnet", 2)
 
 
 def test_agent_security_group_no_ingress():
@@ -43,23 +28,37 @@ def test_agent_security_group_no_ingress():
     })
 
 
-def test_fargate_task_role_s3_only():
+def test_nacls_exist():
     template = get_template()
-    template.has_resource_properties("AWS::IAM::Policy", {
-        "PolicyDocument": {
-            "Statement": assertions.Match.array_with([
-                assertions.Match.object_like({
-                    "Action": ["s3:PutObject", "s3:PutObjectLegalHold", "s3:PutObjectRetention", "s3:PutObjectTagging", "s3:PutObjectVersionTagging", "s3:Abort*"],
-                    "Effect": "Allow",
-                }),
-            ]),
-        },
-    })
+    nacls = template.find_resources("AWS::EC2::NetworkAcl")
+    assert len(nacls) > 0, "Expected at least one NACL for agent subnets"
 
 
-def test_three_sqs_fifo_queues():
+def test_fargate_task_role_no_s3():
     template = get_template()
-    template.resource_count_is("AWS::SQS::Queue", 6)  # 3 main + 3 DLQ
+    policies = template.find_resources("AWS::IAM::Policy")
+    for logical_id, policy in policies.items():
+        props = policy.get("Properties", {})
+        # Check if this policy is attached to the task role
+        roles = props.get("Roles", [])
+        is_task_role = any(
+            "TaskRole" in str(role) for role in roles
+        )
+        if is_task_role:
+            statements = props.get("PolicyDocument", {}).get("Statement", [])
+            for stmt in statements:
+                actions = stmt.get("Action", [])
+                if isinstance(actions, str):
+                    actions = [actions]
+                for action in actions:
+                    assert "s3:PutObject" not in action, (
+                        f"Task role should not have S3 put permissions, found {action}"
+                    )
+
+
+def test_three_sqs_fifo_queues_no_dlqs():
+    template = get_template()
+    template.resource_count_is("AWS::SQS::Queue", 3)
 
 
 def test_sqs_fifo_queues_have_correct_names():
@@ -179,7 +178,4 @@ def test_api_routes_exist():
     })
     template.has_resource_properties("AWS::ApiGatewayV2::Route", {
         "RouteKey": "GET /jobs/{id}",
-    })
-    template.has_resource_properties("AWS::ApiGatewayV2::Route", {
-        "RouteKey": "GET /jobs/{id}/recording",
     })

@@ -4,8 +4,7 @@ set -euo pipefail
 DISPLAY_NUM=99
 export DISPLAY=:${DISPLAY_NUM}
 
-S3_BUCKET="${S3_BUCKET:-}"
-S3_PREFIX="${S3_PREFIX:-}"
+PRESIGNED_POST_DATA="${PRESIGNED_POST_DATA:-}"
 OUTPUT_DIR="/output"
 mkdir -p "$OUTPUT_DIR"
 
@@ -36,7 +35,7 @@ while [ ! -e "/tmp/.X11-unix/X${DISPLAY_NUM}" ]; do
 done
 echo '{"step":0,"action":"xvfb_ready","elapsed_seconds":'$ELAPSED'}'
 
-if [ -n "$S3_BUCKET" ] && [ -n "$S3_PREFIX" ]; then
+if [ -n "$PRESIGNED_POST_DATA" ]; then
     echo '{"step":0,"action":"starting_ffmpeg"}'
     ffmpeg -y -f x11grab -video_size 1024x768 -framerate 5 -i :${DISPLAY_NUM} \
         -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
@@ -55,10 +54,10 @@ if [ -n "${FFMPEG_PID:-}" ] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
     wait "$FFMPEG_PID" 2>/dev/null || true
 fi
 
-if [ -n "$S3_BUCKET" ] && [ -n "$S3_PREFIX" ]; then
+if [ -n "$PRESIGNED_POST_DATA" ]; then
     echo '{"step":0,"action":"uploading_recording"}'
     if [ -f "${OUTPUT_DIR}/recording.mp4" ]; then
-        aws s3 cp "${OUTPUT_DIR}/recording.mp4" "s3://${S3_BUCKET}/${S3_PREFIX}recording.mp4" --quiet || true
+        python3 -c "from agent import upload_file; upload_file('/output/recording.mp4', 'recording.mp4')" || true
     fi
 fi
 

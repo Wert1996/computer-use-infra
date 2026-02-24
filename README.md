@@ -225,7 +225,6 @@ cuseinfra/
 │   ├── completion/handler.py     # ECS state change → update DynamoDB
 │   ├── reaper/handler.py         # DynamoDB TTL stream → ecs:StopTask
 │   ├── sweep/handler.py          # Scheduled orphan cleanup
-│   ├── presign/handler.py        # GET /jobs/{id}/recording
 │   └── get_job/handler.py        # GET /jobs/{id}
 ├── agent/
 │   ├── Dockerfile
