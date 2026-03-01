@@ -9,6 +9,7 @@ import aws_cdk.aws_s3 as s3
 import aws_cdk.aws_sqs as sqs
 from aws_cdk import aws_apigatewayv2 as apigwv2
 from aws_cdk import aws_apigatewayv2_integrations as apigwv2_integrations
+from aws_cdk import aws_apigatewayv2_authorizers as apigwv2_auth
 from constructs import Construct
 
 LAMBDA_DIR = "lambda"
@@ -28,6 +29,10 @@ class JobIngestion(Construct):
         agent_security_group: ec2.ISecurityGroup,
         output_bucket: s3.IBucket,
         secrets_prefix: str,
+        # Authentication parameters
+        jwt_authorizer: apigwv2_auth.HttpJwtAuthorizer = None,
+        user_pool_id: str = None,
+        permissions_table: dynamodb.ITable = None,
     ) -> None:
         super().__init__(scope, construct_id)
 
@@ -42,23 +47,40 @@ class JobIngestion(Construct):
             )
             queues[priority] = queue
 
+        # Base environment for ingest function
+        ingest_env = {
+            "JOBS_TABLE": jobs_table.table_name,
+            "QUEUE_HIGH_URL": queues["high"].queue_url,
+            "QUEUE_MEDIUM_URL": queues["medium"].queue_url,
+            "QUEUE_LOW_URL": queues["low"].queue_url,
+            "MAX_TASK_DURATION_SECONDS": str(int(MAX_TASK_DURATION.to_seconds())),
+        }
+
+        # Add authentication environment variables if provided
+        if user_pool_id:
+            ingest_env["USER_POOL_ID"] = user_pool_id
+
         ingest_fn = _lambda.Function(
             self, "IngestFn",
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler="handler.handler",
             code=_lambda.Code.from_asset(f"{LAMBDA_DIR}/ingest"),
             timeout=cdk.Duration.seconds(10),
-            environment={
-                "JOBS_TABLE": jobs_table.table_name,
-                "QUEUE_HIGH_URL": queues["high"].queue_url,
-                "QUEUE_MEDIUM_URL": queues["medium"].queue_url,
-                "QUEUE_LOW_URL": queues["low"].queue_url,
-                "MAX_TASK_DURATION_SECONDS": str(int(MAX_TASK_DURATION.to_seconds())),
-            },
+            environment=ingest_env,
         )
         jobs_table.grant_write_data(ingest_fn)
         for q in queues.values():
             q.grant_send_messages(ingest_fn)
+
+        # Base environment for get_job function
+        get_job_env = {
+            "JOBS_TABLE": jobs_table.table_name,
+            "OUTPUT_BUCKET": output_bucket.bucket_name,
+        }
+
+        # Add authentication environment variables if provided
+        if user_pool_id:
+            get_job_env["USER_POOL_ID"] = user_pool_id
 
         get_job_fn = _lambda.Function(
             self, "GetJobFn",
@@ -66,25 +88,49 @@ class JobIngestion(Construct):
             handler="handler.handler",
             code=_lambda.Code.from_asset(f"{LAMBDA_DIR}/get_job"),
             timeout=cdk.Duration.seconds(10),
-            environment={
-                "JOBS_TABLE": jobs_table.table_name,
-                "OUTPUT_BUCKET": output_bucket.bucket_name,
-            },
+            environment=get_job_env,
         )
         jobs_table.grant_read_data(get_job_fn)
         output_bucket.grant_read(get_job_fn, "jobs/*")
 
+        # Create permissions management Lambda if permissions table is provided
+        permissions_fn = None
+        if permissions_table and user_pool_id:
+            permissions_env = {
+                "PERMISSIONS_TABLE": permissions_table.table_name,
+                "USER_POOL_ID": user_pool_id,
+            }
+
+            permissions_fn = _lambda.Function(
+                self, "PermissionsFn",
+                runtime=_lambda.Runtime.PYTHON_3_12,
+                handler="handler.handler",
+                code=_lambda.Code.from_asset(f"{LAMBDA_DIR}/permissions"),
+                timeout=cdk.Duration.seconds(30),
+                environment=permissions_env,
+            )
+
+            # Grant permissions to read and write to permissions table
+            permissions_table.grant_read_write_data(permissions_fn)
+
         api = apigwv2.HttpApi(
             self, "Api",
             api_name="cuseinfra-api",
+            cors_preflight={
+                "allow_origins": ["*"],
+                "allow_methods": [apigwv2.CorsHttpMethod.ANY],
+                "allow_headers": ["Content-Type", "Authorization"],
+            },
         )
 
+        # Add routes with optional JWT authorization
         api.add_routes(
             path="/jobs",
             methods=[apigwv2.HttpMethod.POST],
             integration=apigwv2_integrations.HttpLambdaIntegration(
                 "IngestIntegration", ingest_fn
             ),
+            authorizer=jwt_authorizer,
         )
         api.add_routes(
             path="/jobs/{id}",
@@ -92,7 +138,50 @@ class JobIngestion(Construct):
             integration=apigwv2_integrations.HttpLambdaIntegration(
                 "GetJobIntegration", get_job_fn
             ),
+            authorizer=jwt_authorizer,
         )
+
+        # Add permissions management routes if available
+        if permissions_fn:
+            # Update user permissions
+            api.add_routes(
+                path="/permissions/{userId}",
+                methods=[apigwv2.HttpMethod.PUT],
+                integration=apigwv2_integrations.HttpLambdaIntegration(
+                    "UpdatePermissionsIntegration", permissions_fn
+                ),
+                authorizer=jwt_authorizer,
+            )
+
+            # Add user to tenant
+            api.add_routes(
+                path="/tenants/{tenantId}/users",
+                methods=[apigwv2.HttpMethod.POST],
+                integration=apigwv2_integrations.HttpLambdaIntegration(
+                    "AddUserToTenantIntegration", permissions_fn
+                ),
+                authorizer=jwt_authorizer,
+            )
+
+            # Remove user from tenant
+            api.add_routes(
+                path="/permissions/{userId}/{tenantId}",
+                methods=[apigwv2.HttpMethod.DELETE],
+                integration=apigwv2_integrations.HttpLambdaIntegration(
+                    "RemoveUserFromTenantIntegration", permissions_fn
+                ),
+                authorizer=jwt_authorizer,
+            )
+
+            # List users in tenant
+            api.add_routes(
+                path="/tenants/{tenantId}/users",
+                methods=[apigwv2.HttpMethod.GET],
+                integration=apigwv2_integrations.HttpLambdaIntegration(
+                    "ListTenantUsersIntegration", permissions_fn
+                ),
+                authorizer=jwt_authorizer,
+            )
 
         self.api_url = api.url or ""
 

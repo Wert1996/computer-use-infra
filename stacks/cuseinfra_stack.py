@@ -5,6 +5,7 @@ from infra.job_executor import JobExecutor
 from infra.job_ingestion import JobIngestion
 from infra.observability import Observability
 from infra.reaper import Reaper
+from infra.authentication import Authentication
 
 
 class CuseinfraStack(cdk.Stack):
@@ -14,6 +15,8 @@ class CuseinfraStack(cdk.Stack):
         networking = Networking(self, "Networking")
 
         observability = Observability(self, "Observability")
+
+        authentication = Authentication(self, "Authentication")
 
         executor = JobExecutor(
             self, "JobExecutor",
@@ -34,6 +37,10 @@ class CuseinfraStack(cdk.Stack):
             agent_security_group=networking.agent_security_group,
             output_bucket=observability.output_bucket,
             secrets_prefix=executor.secrets_prefix,
+            # Authentication parameters
+            jwt_authorizer=authentication.jwt_authorizer,
+            user_pool_id=authentication.user_pool_id,
+            permissions_table=authentication.permissions_table,
         )
 
         Reaper(
