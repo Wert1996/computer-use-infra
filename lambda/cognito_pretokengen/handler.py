@@ -3,7 +3,7 @@ import os
 import boto3
 import logging
 from typing import Dict, Any, List
-from botocore.exceptions import BotoCore3Error, ClientError
+from botocore.exceptions import ClientError
 
 # Set up logging
 logger = logging.getLogger()
@@ -122,24 +122,51 @@ def build_tenant_permissions(permissions: List[Dict[str, Any]]) -> List[Dict[str
     tenant_permissions = []
 
     for perm in permissions:
-        tenant_id = perm.get('tenantId')
-        permissions_set = perm.get('permissions', set())
+        try:
+            logger.info(f"Processing permission item: {json.dumps(perm, default=str)}")
 
-        # Convert DynamoDB Set to list
-        if hasattr(permissions_set, 'value'):
-            # Handle DynamoDB StringSet
-            permissions_list = list(permissions_set)
-        elif isinstance(permissions_set, set):
-            permissions_list = list(permissions_set)
-        elif isinstance(permissions_set, list):
-            permissions_list = permissions_set
-        else:
-            logger.warning(f"Unexpected permissions format for tenant {tenant_id}: {permissions_set}")
+            tenant_id = perm.get('tenantId')
+            permissions_set = perm.get('permissions')
+
+            if not tenant_id:
+                logger.warning(f"Missing tenantId in permission item: {perm}")
+                continue
+
+            if permissions_set is None:
+                logger.warning(f"No permissions found for tenant {tenant_id}")
+                continue
+
+            logger.info(f"Permissions set type: {type(permissions_set)}, value: {permissions_set}")
+
+            # Convert DynamoDB Set to list
+            permissions_list = []
+
+            if isinstance(permissions_set, set):
+                # Python set (from DynamoDB resource conversion)
+                permissions_list = list(permissions_set)
+            elif isinstance(permissions_set, list):
+                # Already a list
+                permissions_list = permissions_set
+            elif hasattr(permissions_set, '__iter__') and not isinstance(permissions_set, str):
+                # Other iterable types
+                permissions_list = list(permissions_set)
+            elif isinstance(permissions_set, str):
+                # Single permission as string
+                permissions_list = [permissions_set]
+            else:
+                logger.warning(f"Unexpected permissions format for tenant {tenant_id}: {type(permissions_set)} - {permissions_set}")
+                continue
+
+            logger.info(f"Converted permissions for tenant {tenant_id}: {permissions_list}")
+
+            tenant_permissions.append({
+                'tenantId': tenant_id,
+                'permissions': permissions_list
+            })
+
+        except Exception as e:
+            logger.error(f"Error processing permission item {perm}: {e}")
             continue
 
-        tenant_permissions.append({
-            'tenantId': tenant_id,
-            'permissions': permissions_list
-        })
-
+    logger.info(f"Final tenant permissions: {tenant_permissions}")
     return tenant_permissions
